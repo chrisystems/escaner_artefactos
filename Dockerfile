@@ -4,8 +4,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src
 
-# Copy src/ only if it exists, otherwise create an empty directory
-COPY src/ /app/src/ 2>/dev/null || mkdir -p /app/src
+# Create the src directory and copy if it exists
+RUN mkdir -p /app/src
+COPY src/ /app/src/ 2>/dev/null || true
 
 WORKDIR /trabajo
 
