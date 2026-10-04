@@ -4,9 +4,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src
 
-# Create the src directory and copy if it exists
+# Create the src directory
 RUN mkdir -p /app/src
-COPY src/ /app/src/ 2>/dev/null || true
+
+# Copy src/ if it exists, otherwise skip
+COPY --chown=root:root src/ /app/src/ || true
 
 WORKDIR /trabajo
 
