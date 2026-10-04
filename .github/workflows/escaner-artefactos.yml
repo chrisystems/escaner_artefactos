@@ -1,0 +1,157 @@
+name: Escaner de artefactos
+
+on:
+  workflow_dispatch:
+    inputs:
+      artifact_path:
+        description: "Ruta del archivo o carpeta a analizar dentro del repositorio. Ej: artefactos/app.jar"
+        required: true
+        type: string
+      jobs:
+        description: "Numero de procesos concurrentes (-j)"
+        required: false
+        default: "8"
+        type: string
+      extensiones:
+        description: "Extensiones a revisar"
+        required: false
+        default: "jar,war,ear,zip"
+        type: string
+      escanear_terceros:
+        description: "Analizar tambien librerias de terceros"
+        required: false
+        default: false
+        type: boolean
+      pii:
+        description: "Buscar tambien datos personales (tarjetas, correos)"
+        required: false
+        default: false
+        type: boolean
+      reanudar:
+        description: "Agregar artefactos nuevos sin reprocesar lo anterior"
+        required: false
+        default: false
+        type: boolean
+      grupos_internos:
+        description: "Filtro de grupos internos. Ej: *bbva*,*bbvaco*"
+        required: false
+        default: ""
+        type: string
+      omitir_grupos:
+        description: "Grupos a omitir. Ej: com.oracle,com.ibm"
+        required: false
+        default: ""
+
+jobs:
+  escanear:
+    name: Construir imagen y escanear artefacto
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      actions: write
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Validar entrada
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ARTIFACT_PATH="${{ inputs.artifact_path }}"
+
+          if [ -z "$ARTIFACT_PATH" ]; then
+            echo "artifact_path es obligatorio" >&2
+            exit 1
+          fi
+
+          if [[ "$ARTIFACT_PATH" = /* ]] || [[ "$ARTIFACT_PATH" == *".."* ]]; then
+            echo "artifact_path debe ser una ruta relativa dentro del repositorio y no puede contener '..'" >&2
+            exit 1
+          fi
+
+          if [ ! -e "$ARTIFACT_PATH" ]; then
+            echo "No existe el archivo o carpeta indicado: $ARTIFACT_PATH" >&2
+            echo "Sube el archivo al repositorio, por ejemplo en artefactos/, y vuelve a ejecutar el workflow." >&2
+            exit 1
+          fi
+
+      - name: Preparar carpetas de trabajo
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .scanner-work
+          mkdir -p .scanner-work/in .scanner-work/out
+
+          ARTIFACT_PATH="${{ inputs.artifact_path }}"
+          if [ -d "$ARTIFACT_PATH" ]; then
+            cp -R "$ARTIFACT_PATH"/. .scanner-work/in/
+          else
+            cp "$ARTIFACT_PATH" .scanner-work/in/
+          fi
+
+          echo "Contenido a analizar:"
+          find .scanner-work/in -maxdepth 3 -type f -print
+
+      - name: Construir imagen desde Dockerfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build -t escaner-artefactos:ci .
+
+      - name: Ejecutar escaner
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXTRA_ARGS=()
+
+          if [ "${{ inputs.escanear_terceros }}" = "true" ]; then
+            EXTRA_ARGS+=("--escanear-terceros")
+          fi
+
+          if [ "${{ inputs.pii }}" = "true" ]; then
+            EXTRA_ARGS+=("--pii")
+          fi
+
+          if [ "${{ inputs.reanudar }}" = "true" ]; then
+            EXTRA_ARGS+=("--reanudar")
+          fi
+
+          if [ -n "${{ inputs.grupos_internos }}" ]; then
+            EXTRA_ARGS+=("--grupos-internos" "${{ inputs.grupos_internos }}")
+          fi
+
+          if [ -n "${{ inputs.omitir_grupos }}" ]; then
+            EXTRA_ARGS+=("--omitir-grupos" "${{ inputs.omitir_grupos }}")
+          fi
+
+          docker run --rm \
+            -v "${{ github.workspace }}/.scanner-work/in:/in:ro" \
+            -v "${{ github.workspace }}/.scanner-work/out:/out" \
+            escaner-artefactos:ci \
+            -d /in \
+            -o /out \
+            -j "${{ inputs.jobs }}" \
+            --extensiones "${{ inputs.extensiones }}" \
+            "${EXTRA_ARGS[@]}"
+
+      - name: Mostrar resumen si existe
+        if: always()
+        shell: bash
+        run: |
+          if [ -f .scanner-work/out/resumen.md ]; then
+            cat .scanner-work/out/resumen.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No se encontro .scanner-work/out/resumen.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Publicar reportes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-escaner-artefactos
+          path: .scanner-work/out/
+          if-no-files-found: warn
